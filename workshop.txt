@@ -1,0 +1,261 @@
+Login as gpadmin
+cd gpmart
+
+psql
+create database gpmart;
+
+psql gpmart -f gpmart_define_schema_v6.sql
+
+-- Generate the data to load : should take less than 2 minutes
+
+./gpmart_gen --datadirectory /data1/data_load --store_sales_fact 5000000 --product_dimension 500 --store_dimension 50 --promotion_dimension 100 --years 2012-2018
+./gpmart_gen --datadirectory /data1/data_load --store_sales_fact 50000000 --product_dimension 5000 --store_dimension 500 --promotion_dimension 1000 --years 2012-2018
+
+-- load the data : should take less than a minute
+
+./gpmart_gpload_data.sh /data1/data_load | tee -a gpmart_gpload_data.log
+
+SELECT gp_segment_id::INT AS "Segment ID", 
+  count(*)::INT AS "Row Count", 
+	'inventory_fact' AS "Table Name" 
+FROM 
+  inventory_fact 
+GROUP BY 1;
+
+ Segment ID | Row Count |   Table Name   
+------------+-----------+----------------
+          5 |     37546 | inventory_fact
+          2 |     37653 | inventory_fact
+          4 |     37440 | inventory_fact
+          0 |     37734 | inventory_fact
+          1 |     37258 | inventory_fact
+          7 |     37470 | inventory_fact
+          6 |     37351 | inventory_fact
+          3 |     37548 | inventory_fact
+(8 rows)
+
+
+SELECT gp_segment_id::INT AS "Segment ID", 
+  count(*)::INT AS "Row Count", 
+	'store.store_sales_fact' AS "Table Name" 
+FROM 
+  store.store_sales_fact 
+GROUP BY 1;
+
+ Segment ID | Row Count |       Table Name       
+------------+-----------+------------------------
+          5 |   6248990 | store.store_sales_fact
+          2 |   6249919 | store.store_sales_fact
+          6 |   6247683 | store.store_sales_fact
+          0 |   6246780 | store.store_sales_fact
+          3 |   6250844 | store.store_sales_fact
+          4 |   6249545 | store.store_sales_fact
+          1 |   6250300 | store.store_sales_fact
+          7 |   6255939 | store.store_sales_fact
+(8 rows)
+
+
+SELECT gp_segment_id::INT AS "Segment ID", 
+  count(*)::INT AS "Row Count", 
+	'online_sales.online_sales_fact' AS "Table Name" 
+FROM 
+  online_sales.online_sales_fact 
+GROUP BY 1;
+
+
+ Segment ID | Row Count |           Table Name           
+------------+-----------+--------------------------------
+          5 |    576218 | online_sales.online_sales_fact
+          2 |    644320 | online_sales.online_sales_fact
+          6 |    645062 | online_sales.online_sales_fact
+          3 |    598196 | online_sales.online_sales_fact
+          7 |    696852 | online_sales.online_sales_fact
+          0 |    641076 | online_sales.online_sales_fact
+          1 |    586327 | online_sales.online_sales_fact
+          4 |    611949 | online_sales.online_sales_fact
+(8 rows)
+
+-- Change for a bad distribution 
+
+alter table online_sales.online_sales_fact set distributed by (transaction_type);
+
+SELECT gp_segment_id::INT AS "Segment ID", 
+  count(*)::INT AS "Row Count", 
+'online_sales.online_sales_fact' AS "Table Name" 
+FROM 
+  online_sales.online_sales_fact 
+GROUP BY 1;
+
+-- Bad distribution
+
+ Segment ID | Row Count |           Table Name           
+------------+-----------+--------------------------------
+          5 |    249866 | online_sales.online_sales_fact
+          4 |   4750134 | online_sales.online_sales_fact
+(2 rows)
+
+-- Change distribution again 
+
+alter table online_sales.online_sales_fact set distributed by (sale_date_key);
+
+SELECT gp_segment_id::INT AS "Segment ID", 
+  count(*)::INT AS "Row Count", 
+'online_sales.online_sales_fact' AS "Table Name" 
+FROM 
+  online_sales.online_sales_fact 
+GROUP BY 1;
+
+ Segment ID | Row Count |           Table Name           
+------------+-----------+--------------------------------
+          3 |    598196 | online_sales.online_sales_fact
+          0 |    641076 | online_sales.online_sales_fact
+          5 |    576218 | online_sales.online_sales_fact
+          2 |    644320 | online_sales.online_sales_fact
+          1 |    586327 | online_sales.online_sales_fact
+          7 |    696852 | online_sales.online_sales_fact
+          6 |    645062 | online_sales.online_sales_fact
+          4 |    611949 | online_sales.online_sales_fact
+		 
+-- Create a partition table similar to store.store_sales_fact_part
+-- this table can be denormalized to speedup queries
+
+drop table if exists store.store_sales_fact_part;
+
+CREATE TABLE store.store_sales_fact_part (
+sales_date              date,
+sales_month             integer,
+sales_year              integer,
+product_key             integer,
+product_version         integer,
+store_key               integer,
+promotion_key           integer,
+customer_key            integer,
+employee_key            integer,
+pos_transaction_number  integer,
+sales_quantity          integer,
+sales_dollar_amount     integer,
+cost_dollar_amount      integer,
+gross_profit_dollar_amount integer,
+transaction_type        varchar(16),
+transaction_time        time,
+tender_type             varchar(8)
+) WITH (appendonly=true, orientation=column,compresstype=rle_type)
+DISTRIBUTED BY (sales_date)
+PARTITION BY RANGE (sales_date)
+(PARTITION yr_1 START (date '2012-01-01') INCLUSIVE,
+PARTITION yr_2 START (date '2013-01-01') INCLUSIVE,
+PARTITION yr_3 START (date '2014-01-01') INCLUSIVE,
+PARTITION yr_4 START (date '2015-01-01') INCLUSIVE,
+PARTITION yr_5 START (date '2016-01-01') INCLUSIVE,
+PARTITION yr_6 START (date '2017-01-01') INCLUSIVE,
+PARTITION yr_7 START (date '2018-01-01') INCLUSIVE
+END (date '2018-12-31') INCLUSIVE
+EVERY (INTERVAL '1 year'));
+
+-- Insert the data from store.store_sales_fact 
+
+insert into store.store_sales_fact_part 
+select D.date,D.calendar_month_number_in_year,D.calendar_year,
+S.product_key,S.product_version ,       
+S.store_key,              
+S.promotion_key,          
+S.customer_key ,          
+S.employee_key ,          
+S.pos_transaction_number ,
+S.sales_quantity     ,    
+S.sales_dollar_amount  ,  
+S.cost_dollar_amount ,    
+S.gross_profit_dollar_amount,
+S.transaction_type   ,    
+S.transaction_time ,      
+S.tender_type              
+from store.store_sales_fact S , date_dimension D
+where S.date_key=D.date_key;
+
+ \d+ store.store_sales_fact_part;
+                                                  Append-Only Columnar Table "store.store_sales_fact_part"
+           Column           |          Type          | Modifiers | Storage  | Stats target | Compression Type | Compression Level 
+| Block Size | Description 
+----------------------------+------------------------+-----------+----------+--------------+------------------+-------------------
++------------+-------------
+ sales_date                 | date                   |           | plain    |              | rle_type         | 1                 
+| 32768      | 
+ sales_month                | integer                |           | plain    |              | rle_type         | 1                 
+| 32768      | 
+ sales_year                 | integer                |           | plain    |              | rle_type         | 1                 
+| 32768      | 
+ product_key                | integer                |           | plain    |              | rle_type         | 1                 
+| 32768      | 
+ product_version            | integer                |           | plain    |              | rle_type         | 1                 
+| 32768      | 
+ store_key                  | integer                |           | plain    |              | rle_type         | 1                 
+| 32768      | 
+ promotion_key              | integer                |           | plain    |              | rle_type         | 1                 
+| 32768      | 
+ customer_key               | integer                |           | plain    |              | rle_type         | 1                 
+| 32768      | 
+ employee_key               | integer                |           | plain    |              | rle_type         | 1                 
+| 32768      | 
+ pos_transaction_number     | integer                |           | plain    |              | rle_type         | 1                 
+| 32768      | 
+ sales_quantity             | integer                |           | plain    |              | rle_type         | 1                 
+| 32768      | 
+ sales_dollar_amount        | integer                |           | plain    |              | rle_type         | 1                 
+| 32768      | 
+ cost_dollar_amount         | integer                |           | plain    |              | rle_type         | 1                 
+| 32768      | 
+ gross_profit_dollar_amount | integer                |           | plain    |              | rle_type         | 1                 
+| 32768      | 
+ transaction_type           | character varying(16)  |           | extended |              | rle_type         | 1                 
+| 32768      | 
+ transaction_time           | time without time zone |           | plain    |              | rle_type         | 1                 
+| 32768      | 
+ tender_type                | character varying(8)   |           | extended |              | rle_type         | 1                 
+| 32768      | 
+Checksum: t
+Child tables: store.store_sales_fact_part_1_prt_yr_1,
+              store.store_sales_fact_part_1_prt_yr_2,
+              store.store_sales_fact_part_1_prt_yr_3,
+              store.store_sales_fact_part_1_prt_yr_4,
+              store.store_sales_fact_part_1_prt_yr_5,
+              store.store_sales_fact_part_1_prt_yr_6,
+              store.store_sales_fact_part_1_prt_yr_7
+Distributed by: (sales_date)
+Partition by: (sales_date)
+Options: appendonly=true, orientation=column, compresstype=rle_type
+
+select sales_year,count(*) from store.store_sales_fact_part
+group by 1 order by 1;
+
+ sales_year |  count  
+------------+---------
+       2012 | 7158254
+       2013 | 7141437
+       2014 | 7285218
+       2015 | 6960091
+       2016 | 7118937
+       2017 | 7138150
+       2018 | 7197913
+(7 rows)
+
+
+select count(*) from store.store_sales_fact_part_1_prt_yr_1;
+ count  
+--------
+ 7158254
+(1 row)
+
+
+-- Change Compression Algorithmn
+select pg_size_pretty(pg_relation_size('store.store_sales_fact'));
+
+drop table if exists store.store_sales_fact_compress;
+
+create table store.store_sales_fact_compress
+WITH (appendonly=true, orientation=column ,  compresstype=rle_type, compresslevel=3) 
+as select * from store.store_sales_fact DISTRIBUTED randomly;
+
+select pg_size_pretty(pg_relation_size('store.store_sales_fact_compress'));
+
+
+
