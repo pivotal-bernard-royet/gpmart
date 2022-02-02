@@ -6,7 +6,7 @@ GPMart has been adapted to work with GreenPlum
 **gpmart_gen.cpp** is the data generator for the GPMart Example Database
 as described in the Getting Started guide.
 
-To build:
+To build gpmart_gen :
 
     make gpmart_gen
 
@@ -39,13 +39,14 @@ where the options can be in any order and only need to be long enough to be uniq
 
 Example:
 
-`	./gpmart_gen \
-         --datadirectory /temp/gpmart_schema \
-         --store_sales_fact 5000000 \
-         --product_dimension 500 \
-         --store_dimension 50 \
-         --promotion_dimension 100 \
-         --years 2012-2016`
+    ./gpmart_gen \
+	--datadirectory /temp/gpmart_schema \
+    --store_sales_fact 5000000 \
+    --product_dimension 500 \
+    --store_dimension 50 \
+    --promotion_dimension 100 \
+    --years 2012-2016
+
 
 **gpmart_genTime.c** is to generate the time data in Time.txt.
 
@@ -81,20 +82,20 @@ Create the database schema (v5 for GreenPlum v5.x , v6 for GreenPlum v6.x)
 
     psql gpmart -f gpmart_define_schema_v6.sql
 
-**2) Generate the data
+**2) Generate the data**
 
 Generate the data - use a directory where you have enough diskspace
 Here's an example with a 50M rows store_sales_fact table
 
     ./gpmart_gen --datadirectory /data1/data_load \
     --store_sales_fact 50000000 \
-	--product_dimension 5000 
+	--product_dimension 5000 \
 	--store_dimension 500 \
 	--promotion_dimension 1000 \
 	--years 2012-2018
 
 
-**3) Load the data
+**3) Load the data**
 
 Load the data into the gpmart database
 
